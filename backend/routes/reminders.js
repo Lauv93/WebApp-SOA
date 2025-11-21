@@ -2,115 +2,202 @@
  * @swagger
  * tags:
  *   name: Reminders
- *   description: Recordatorios de mascotas
+ *   description: Recordatorios para cuidados de mascotas
  */
-const express = require('express');
+
+const express = require("express");
 const router = express.Router();
-const pool = require('../db');
-const auth = require('../middleware/authMiddleware');
+const pool = require("../db");
+const auth = require("../middleware/authMiddleware");
+const isAdmin = require("../middleware/isAdmin");
+
+/**
+ * @swagger
+ * /api/reminders:
+ *   post:
+ *     summary: Crear un recordatorio
+ *     tags: [Reminders]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post("/", auth, async (req, res) => {
+  try {
+    const { pet_id, message, remind_at } = req.body;
+
+    // Validar mascota si es usuario normal
+    if (req.user.role !== "admin") {
+      const pet = await pool.query(
+        "SELECT * FROM pets WHERE id = $1 AND user_id = $2",
+        [pet_id, req.user.id]
+      );
+
+      if (pet.rows.length === 0)
+        return res.status(403).json({ error: "No puedes crear recordatorios para esta mascota" });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO reminders (pet_id, message, remind_at)
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [pet_id, message, remind_at]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 /**
  * @swagger
  * /api/reminders:
  *   get:
- *     summary: Obtener recordatorios del usuario
+ *     summary: Obtener recordatorios
  *     tags: [Reminders]
  *     security:
  *       - bearerAuth: []
- *     responses:
- *       200: { description: Lista de recordatorios }
  */
-router.post('/', auth, async (req, res) => {
+router.get("/", auth, async (req, res) => {
   try {
-    const { pet_id, title, description, date } = req.body;
+    let result;
 
-    // Validar que la mascota es del usuario
-    const petCheck = await pool.query(
-      'SELECT * FROM public.pets WHERE id = $1 AND user_id = $2',
-      [pet_id, req.user.id]
-    );
-
-    if (petCheck.rows.length === 0)
-      return res.status(403).json({ error: 'Mascota no pertenece al usuario' });
-
-    const result = await pool.query(
-      `INSERT INTO public.reminders (user_id, pet_id, title, description, date)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING *`,
-      [req.user.id, pet_id, title, description, date]
-    );
-
-    res.status(201).json(result.rows[0]);
-  } catch (err) {
-    console.error('Error al crear recordatorio:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Listar recordatorios del usuario (todos)
-router.get('/', auth, async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT r.*, p.name AS pet_name
-       FROM public.reminders r
-       JOIN public.pets p ON p.id = r.pet_id
-       WHERE r.user_id = $1
-       ORDER BY r.date`,
-      [req.user.id]
-    );
+    if (req.user.role === "admin") {
+      result = await pool.query(
+        `SELECT r.*, p.name AS pet_name, u.name AS owner
+         FROM reminders r
+         JOIN pets p ON p.id = r.pet_id
+         JOIN users u ON p.user_id = u.id
+         ORDER BY remind_at ASC`
+      );
+    } else {
+      result = await pool.query(
+        `SELECT r.*, p.name AS pet_name
+         FROM reminders r
+         JOIN pets p ON p.id = r.pet_id
+         WHERE p.user_id = $1
+         ORDER BY remind_at ASC`,
+        [req.user.id]
+      );
+    }
 
     res.json(result.rows);
-  } catch (err) {
-    console.error('Error al obtener recordatorios:', err.message);
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
-// Listar recordatorios por mascota
-router.get('/pet/:pet_id', auth, async (req, res) => {
+
+/**
+ * @swagger
+ * /api/reminders/{id}:
+ *   get:
+ *     summary: Obtener un recordatorio específico
+ *     tags: [Reminders]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get("/:id", auth, async (req, res) => {
   try {
-    const { pet_id } = req.params;
-
-    const petCheck = await pool.query(
-      'SELECT * FROM public.pets WHERE id = $1 AND user_id = $2',
-      [pet_id, req.user.id]
-    );
-    if (petCheck.rows.length === 0)
-      return res.status(403).json({ error: 'Mascota no pertenece al usuario' });
-
     const result = await pool.query(
-      `SELECT * FROM public.reminders
-       WHERE pet_id = $1 AND user_id = $2
-       ORDER BY date`,
-      [pet_id, req.user.id]
-    );
-
-    res.json(result.rows);
-  } catch (err) {
-    console.error('Error al obtener recordatorios por mascota:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Eliminar recordatorio
-router.delete('/:id', auth, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const result = await pool.query(
-      `DELETE FROM public.reminders
-       WHERE id = $1 AND user_id = $2
-       RETURNING *`,
-      [id, req.user.id]
+      `SELECT r.*, p.user_id
+       FROM reminders r
+       JOIN pets p ON p.id = r.pet_id
+       WHERE r.id = $1`,
+      [req.params.id]
     );
 
     if (result.rows.length === 0)
-      return res.status(404).json({ error: 'Recordatorio no encontrado o no pertenece al usuario' });
+      return res.status(404).json({ error: "Recordatorio no encontrado" });
 
-    res.json({ message: 'Recordatorio eliminado' });
-  } catch (err) {
-    console.error('Error al borrar recordatorio:', err.message);
-    res.status(500).json({ error: err.message });
+    const reminder = result.rows[0];
+
+    if (req.user.role !== "admin" && reminder.user_id !== req.user.id)
+      return res.status(403).json({ error: "No tienes permiso para ver este recordatorio" });
+
+    res.json(reminder);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
+/**
+ * @swagger
+ * /api/reminders/{id}:
+ *   patch:
+ *     summary: Actualizar un recordatorio
+ *     tags: [Reminders]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch("/:id", auth, async (req, res) => {
+  try {
+    const { message, remind_at } = req.body;
+
+    // Validar permisos
+    const reminder = await pool.query(
+      `SELECT r.*, p.user_id
+       FROM reminders r
+       JOIN pets p ON p.id = r.pet_id
+       WHERE r.id = $1`,
+      [req.params.id]
+    );
+
+    if (reminder.rows.length === 0)
+      return res.status(404).json({ error: "Recordatorio no encontrado" });
+
+    const data = reminder.rows[0];
+
+    if (req.user.role !== "admin" && data.user_id !== req.user.id)
+      return res.status(403).json({ error: "No puedes modificar este recordatorio" });
+
+    const updated = await pool.query(
+      `UPDATE reminders
+       SET message = COALESCE($1, message),
+           remind_at = COALESCE($2, remind_at)
+       WHERE id = $3
+       RETURNING *`,
+      [message, remind_at, req.params.id]
+    );
+
+    res.json({ message: "Recordatorio actualizado", reminder: updated.rows[0] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * @swagger
+ * /api/reminders/{id}:
+ *   delete:
+ *     summary: Eliminar un recordatorio
+ *     tags: [Reminders]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.delete("/:id", auth, async (req, res) => {
+  try {
+    const reminder = await pool.query(
+      `SELECT r.*, p.user_id
+       FROM reminders r
+       JOIN pets p ON p.id = r.pet_id
+       WHERE r.id = $1`,
+      [req.params.id]
+    );
+
+    if (reminder.rows.length === 0)
+      return res.status(404).json({ error: "Recordatorio no encontrado" });
+
+    const data = reminder.rows[0];
+
+    if (req.user.role !== "admin" && data.user_id !== req.user.id)
+      return res.status(403).json({ error: "No tienes permiso para eliminar este recordatorio" });
+
+    await pool.query("DELETE FROM reminders WHERE id = $1", [req.params.id]);
+
+    res.json({ message: "Recordatorio eliminado" });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 

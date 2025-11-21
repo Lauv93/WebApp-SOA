@@ -1,100 +1,185 @@
 /**
  * @swagger
  * tags:
- *   name: Medical Records
+ *   name: MedicalRecords
  *   description: Historial médico de mascotas
  */
-const express = require('express');
+
+const express = require("express");
 const router = express.Router();
-const pool = require('../db');
-const auth = require('../middleware/authMiddleware');
+const pool = require("../db");
+const auth = require("../middleware/authMiddleware");
+const isAdmin = require("../middleware/isAdmin");
 
 /**
  * @swagger
  * /api/medical-records:
  *   post:
- *     summary: Crear registro médico
- *     tags: [Medical Records]
+ *     summary: Crear un registro médico para una mascota (solo admin)
+ *     tags: [MedicalRecords]
  *     security:
  *       - bearerAuth: []
- *     responses:
- *       201: { description: Registro creado }
  */
-router.post('/', auth, async (req, res) => {
+router.post("/", auth, isAdmin, async (req, res) => {
   try {
-    const { pet_id, weight, diagnosis, treatment, date } = req.body;
+    const { pet_id, description, treatment, date } = req.body;
 
-    // Validar que la mascota pertenece al usuario
-    const petCheck = await pool.query(
-      'SELECT * FROM public.pets WHERE id = $1 AND user_id = $2',
-      [pet_id, req.user.id]
+    const petExists = await pool.query(
+      "SELECT * FROM pets WHERE id = $1",
+      [pet_id]
     );
 
-    if (petCheck.rows.length === 0)
-      return res.status(403).json({ error: 'Mascota no pertenece al usuario' });
+    if (petExists.rows.length === 0)
+      return res.status(404).json({ error: "Mascota no encontrada" });
 
     const result = await pool.query(
-      `INSERT INTO public.medical_records 
-       (pet_id, user_id, weight, diagnosis, treatment, date)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO medical_records (pet_id, description, treatment, date)
+       VALUES ($1, $2, $3, $4)
        RETURNING *`,
-      [pet_id, req.user.id, weight, diagnosis, treatment, date]
+      [pet_id, description, treatment, date]
     );
 
     res.status(201).json(result.rows[0]);
-  } catch (err) {
-    console.error('Error al crear registro médico:', err.message);
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
-// Listar historial de una mascota (PROTEGIDO)
-router.get('/:pet_id', auth, async (req, res) => {
+
+/**
+ * @swagger
+ * /api/medical-records/pet/{pet_id}:
+ *   get:
+ *     summary: Obtener historial médico de una mascota
+ *     tags: [MedicalRecords]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get("/pet/:pet_id", auth, async (req, res) => {
   try {
-    const petId = req.params.pet_id;
+    const { pet_id } = req.params;
 
-    // Validar mascota del usuario
-    const petCheck = await pool.query(
-      'SELECT * FROM public.pets WHERE id = $1 AND user_id = $2',
-      [petId, req.user.id]
-    );
-    if (petCheck.rows.length === 0)
-      return res.status(403).json({ error: 'Mascota no pertenece al usuario' });
-
-    const result = await pool.query(
-      `SELECT * FROM public.medical_records 
-       WHERE pet_id = $1 AND user_id = $2
-       ORDER BY date DESC`,
-      [petId, req.user.id]
+    const pet = await pool.query(
+      "SELECT * FROM pets WHERE id = $1",
+      [pet_id]
     );
 
-    res.json(result.rows);
-  } catch (err) {
-    console.error('Error al obtener historial médico:', err.message);
-    res.status(500).json({ error: err.message });
+    if (pet.rows.length === 0)
+      return res.status(404).json({ error: "Mascota no encontrada" });
+
+    if (req.user.role !== "admin" && pet.rows[0].user_id !== req.user.id)
+      return res.status(403).json({ error: "No tienes permiso para ver este historial" });
+
+    const records = await pool.query(
+      "SELECT * FROM medical_records WHERE pet_id = $1 ORDER BY date DESC",
+      [pet_id]
+    );
+
+    res.json(records.rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
-// Eliminar registro médico (PROTEGIDO)
-router.delete('/:id', auth, async (req, res) => {
+/**
+ * @swagger
+ * /api/medical-records/{id}:
+ *   get:
+ *     summary: Ver un registro médico por ID
+ *     tags: [MedicalRecords]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get("/:id", auth, async (req, res) => {
   try {
-    const recordId = req.params.id;
+    const record = await pool.query(
+      `SELECT mr.*, p.user_id
+       FROM medical_records mr
+       JOIN pets p ON p.id = mr.pet_id
+       WHERE mr.id = $1`,
+      [req.params.id]
+    );
 
-    const result = await pool.query(
-      `DELETE FROM public.medical_records 
-       WHERE id = $1 AND user_id = $2 
+    if (record.rows.length === 0)
+      return res.status(404).json({ error: "Registro no encontrado" });
+
+    const data = record.rows[0];
+
+    if (req.user.role !== "admin" && data.user_id !== req.user.id)
+      return res.status(403).json({ error: "No tienes permiso para ver este registro" });
+
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
+/**
+ * @swagger
+ * /api/medical-records/{id}:
+ *   patch:
+ *     summary: Actualizar un registro médico (solo admin)
+ *     tags: [MedicalRecords]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch("/:id", auth, isAdmin, async (req, res) => {
+  try {
+    const { description, treatment, date } = req.body;
+
+    const record = await pool.query(
+      "SELECT * FROM medical_records WHERE id = $1",
+      [req.params.id]
+    );
+
+    if (record.rows.length === 0)
+      return res.status(404).json({ error: "Registro no encontrado" });
+
+    const updated = await pool.query(
+      `UPDATE medical_records
+       SET description = COALESCE($1, description),
+           treatment = COALESCE($2, treatment),
+           date = COALESCE($3, date)
+       WHERE id = $4
        RETURNING *`,
-      [recordId, req.user.id]
+      [description, treatment, date, req.params.id]
     );
 
-    if (result.rows.length === 0)
-      return res.status(404).json({ error: 'Registro no encontrado o no pertenece al usuario' });
-
-    res.json({ message: 'Registro médico eliminado' });
-  } catch (err) {
-    console.error('Error al borrar registro médico:', err.message);
-    res.status(500).json({ error: err.message });
+    res.json({ message: "Registro actualizado", record: updated.rows[0] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
+
+/**
+ * @swagger
+ * /api/medical-records/{id}:
+ *   delete:
+ *     summary: Eliminar un registro médico (solo admin)
+ *     tags: [MedicalRecords]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.delete("/:id", auth, isAdmin, async (req, res) => {
+  try {
+    const record = await pool.query(
+      "SELECT * FROM medical_records WHERE id = $1",
+      [req.params.id]
+    );
+
+    if (record.rows.length === 0)
+      return res.status(404).json({ error: "Registro no encontrado" });
+
+    await pool.query("DELETE FROM medical_records WHERE id = $1", [
+      req.params.id,
+    ]);
+
+    res.json({ message: "Registro eliminado correctamente" });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 
 module.exports = router;

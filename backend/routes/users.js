@@ -241,4 +241,166 @@ router.get('/:id', authMiddleware, async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /api/users/update:
+ *   patch:
+ *     summary: Actualizar datos del usuario autenticado
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               email:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Usuario actualizado correctamente
+ */
+router.patch('/update', authMiddleware, async (req, res) => {
+  try {
+    const { name, email } = req.body;
+
+    const result = await pool.query(
+      `UPDATE public.users 
+       SET name = COALESCE($1, name), 
+           email = COALESCE($2, email)
+       WHERE id = $3
+       RETURNING id, name, email, role, created_at`,
+      [name, email, req.user.id]
+    );
+
+    res.json({ message: "Usuario actualizado", user: result.rows[0] });
+
+  } catch (err) {
+    console.error("Error al actualizar usuario:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * @swagger
+ * /api/users/update-password:
+ *   patch:
+ *     summary: Cambiar contraseña del usuario
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               old_password:
+ *                 type: string
+ *               new_password:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Contraseña actualizada correctamente
+ */
+router.patch('/update-password', authMiddleware, async (req, res) => {
+  try {
+    const { old_password, new_password } = req.body;
+
+    const userResult = await pool.query(
+      `SELECT password_hash FROM public.users WHERE id = $1`,
+      [req.user.id]
+    );
+
+    const user = userResult.rows[0];
+    const match = await bcrypt.compare(old_password, user.password_hash);
+
+    if (!match)
+      return res.status(400).json({ error: "La contraseña actual es incorrecta" });
+
+    const newHash = await bcrypt.hash(new_password, 10);
+
+    await pool.query(
+      `UPDATE public.users SET password_hash = $1 WHERE id = $2`,
+      [newHash, req.user.id]
+    );
+
+    res.json({ message: "Contraseña actualizada correctamente" });
+
+  } catch (err) {
+    console.error("Error en update-password:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * @swagger
+ * /api/users/delete:
+ *   delete:
+ *     summary: Eliminar la cuenta del usuario autenticado
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Cuenta eliminada correctamente
+ */
+router.delete('/delete', authMiddleware, async (req, res) => {
+  try {
+    await pool.query(
+      `DELETE FROM public.users WHERE id = $1`,
+      [req.user.id]
+    );
+
+    res.json({ message: "Cuenta eliminada correctamente" });
+
+  } catch (err) {
+    console.error("Error en delete account:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * @swagger
+ * /api/users/{id}:
+ *   delete:
+ *     summary: Eliminar un usuario (solo admin)
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Usuario eliminado
+ */
+router.delete('/:id', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== "admin")
+      return res.status(403).json({ error: "Acceso denegado (solo admin)" });
+
+    const { id } = req.params;
+
+    await pool.query(
+      `DELETE FROM public.users WHERE id = $1`,
+      [id]
+    );
+
+    res.json({ message: "Usuario eliminado por administrador" });
+
+  } catch (err) {
+    console.error("Error admin delete user:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;

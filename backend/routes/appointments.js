@@ -2,91 +2,167 @@
  * @swagger
  * tags:
  *   name: Appointments
- *   description: Citas veterinarias
+ *   description: Gestión de citas veterinarias
  */
-const express = require('express');
+
+const express = require("express");
 const router = express.Router();
-const pool = require('../db');
-const auth = require('../middleware/authMiddleware');
+const pool = require("../db");
+const auth = require("../middleware/authMiddleware");
+const isAdmin = require("../middleware/isAdmin");
 
 /**
  * @swagger
  * /api/appointments:
  *   post:
- *     summary: Crear cita
+ *     summary: Crear una cita
  *     tags: [Appointments]
  *     security:
  *       - bearerAuth: []
- *     responses:
- *       201:
- *         description: Cita creada
  */
-router.post('/', auth, async (req, res) => {
+router.post("/", auth, async (req, res) => {
   try {
     const { pet_id, date, reason } = req.body;
 
-    // Validar que esa mascota pertenece al usuario
-    const petCheck = await pool.query(
-      'SELECT * FROM public.pets WHERE id = $1 AND user_id = $2',
-      [pet_id, req.user.id]
-    );
+    if (req.user.role !== "admin") {
+      const petCheck = await pool.query(
+        "SELECT * FROM pets WHERE id = $1 AND user_id = $2",
+        [pet_id, req.user.id]
+      );
 
-    if (petCheck.rows.length === 0)
-      return res.status(403).json({ error: 'Esta mascota no te pertenece' });
+      if (petCheck.rows.length === 0)
+        return res.status(403).json({ error: "No puedes crear citas para esta mascota" });
+    }
 
     const result = await pool.query(
-      `INSERT INTO public.appointments (user_id, pet_id, date, reason)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO appointments (pet_id, date, reason, status)
+       VALUES ($1, $2, $3, 'scheduled')
        RETURNING *`,
-      [req.user.id, pet_id, date, reason]
+      [pet_id, date, reason]
     );
 
     res.status(201).json(result.rows[0]);
-  } catch (err) {
-    console.error('Error al crear cita:', err.message);
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
-// Listar citas del usuario (PROTEGIDO)
-router.get('/', auth, async (req, res) => {
+
+router.get("/", auth, async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT a.*, p.name AS pet_name
-       FROM public.appointments a
-       JOIN public.pets p ON p.id = a.pet_id
-       WHERE a.user_id = $1
-       ORDER BY a.date`,
-      [req.user.id]
-    );
+    const result =
+      req.user.role === "admin"
+        ? await pool.query(
+            `SELECT a.*, p.name AS pet_name, u.name AS owner 
+             FROM appointments a
+             JOIN pets p ON p.id = a.pet_id
+             JOIN users u ON u.id = p.user_id
+             ORDER BY date DESC`
+          )
+        : await pool.query(
+            `SELECT a.*, p.name AS pet_name
+             FROM appointments a
+             JOIN pets p ON p.id = a.pet_id
+             WHERE p.user_id = $1
+             ORDER BY date DESC`,
+            [req.user.id]
+          );
 
     res.json(result.rows);
-  } catch (err) {
-    console.error('Error al obtener citas:', err.message);
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
-// Eliminar cita (PROTEGIDO)
-router.delete('/:id', auth, async (req, res) => {
+router.get("/:id", auth, async (req, res) => {
   try {
-    const appointmentId = req.params.id;
-
     const result = await pool.query(
-      `DELETE FROM public.appointments
-       WHERE id = $1 AND user_id = $2
-       RETURNING *`,
-      [appointmentId, req.user.id]
+      `SELECT a.*, p.user_id 
+       FROM appointments a
+       JOIN pets p ON p.id = a.pet_id
+       WHERE a.id = $1`,
+      [req.params.id]
     );
 
     if (result.rows.length === 0)
-      return res.status(404).json({ error: 'Cita no encontrada o no te pertenece' });
+      return res.status(404).json({ error: "Cita no encontrada" });
 
-    res.json({ message: 'Cita cancelada' });
-  } catch (err) {
-    console.error('Error al borrar cita:', err.message);
-    res.status(500).json({ error: err.message });
+    const appointment = result.rows[0];
+
+    if (req.user.role !== "admin" && appointment.user_id !== req.user.id)
+      return res.status(403).json({ error: "No puedes ver esta cita" });
+
+    res.json(appointment);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
+
+
+router.patch("/:id", auth, async (req, res) => {
+  try {
+    const { date, reason } = req.body;
+
+    const appt = await pool.query(
+      `SELECT a.*, p.user_id
+       FROM appointments a
+       JOIN pets p ON p.id = a.pet_id
+       WHERE a.id = $1`,
+      [req.params.id]
+    );
+
+    if (appt.rows.length === 0)
+      return res.status(404).json({ error: "Cita no encontrada" });
+
+    const cita = appt.rows[0];
+
+
+    if (req.user.role !== "admin") {
+      if (cita.user_id !== req.user.id)
+        return res.status(403).json({ error: "No puedes modificar esta cita" });
+
+      const solicitud = await pool.query(
+        `UPDATE appointments
+         SET status = 'pending_change'
+         WHERE id = $1
+         RETURNING *`,
+        [req.params.id]
+      );
+
+      return res.json({
+        message: "Solicitud de cambio enviada al administrador",
+        cita: solicitud.rows[0],
+      });
+    }
+
+    // Admin
+    const result = await pool.query(
+      `UPDATE appointments
+       SET date = COALESCE($1, date),
+           reason = COALESCE($2, reason),
+           status = 'scheduled'
+       WHERE id = $3
+       RETURNING *`,
+      [date, reason, req.params.id]
+    );
+
+    res.json({ message: "Cita actualizada por admin", cita: result.rows[0] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.delete("/:id", auth, isAdmin, async (req, res) => {
+  try {
+    await pool.query("DELETE FROM appointments WHERE id = $1", [
+      req.params.id,
+    ]);
+
+    res.json({ message: "Cita eliminada por administrador" });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 
 module.exports = router;

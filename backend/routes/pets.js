@@ -5,96 +5,105 @@
  *   description: Gestión de mascotas
  */
 
-
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const pool = require('../db');
-const authMiddleware = require('../middleware/authMiddleware');
+const pool = require("../db");
+const auth = require("../middleware/authMiddleware");
 
-/**
- * @swagger
- * /api/pets:
- *   post:
- *     summary: Crear una mascota
- *     tags: [Pets]
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               name: { type: string }
- *               age: { type: integer }
- *               type: { type: string }
- *               breed: { type: string }
- *     responses:
- *       201:
- *         description: Mascota creada
- */
-router.post('/', authMiddleware, async (req, res) => {
+// Crear mascota
+router.post("/", auth, async (req, res) => {
   try {
-    const { name, type, age } = req.body;
+    const { name, type, breed, age } = req.body;
 
     const result = await pool.query(
-      `INSERT INTO public.pets (user_id, name, type, age)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO pets (user_id, name, type, breed, age)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
-      [req.user.id, name, type, age]
+      [req.user.id, name, type, breed, age]
     );
 
     res.status(201).json(result.rows[0]);
-  } catch (err) {
-    console.error('Error al crear mascota:', err.message);
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
-/**
- * @swagger
- * /api/pets:
- *   get:
- *     summary: Obtener mascotas del usuario
- *     tags: [Pets]
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200: { description: Lista de mascotas }
- */
-router.get('/', authMiddleware, async (req, res) => {
+// Obtener mis mascotas
+router.get("/", auth, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT * FROM public.pets WHERE user_id = $1 ORDER BY created_at DESC`,
+      "SELECT * FROM pets WHERE user_id = $1",
       [req.user.id]
     );
     res.json(result.rows);
-  } catch (err) {
-    console.error('Error al obtener mascotas:', err.message);
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
-// Eliminar mascota (PROTEGIDO)
-router.delete('/:id', authMiddleware, async (req, res) => {
+// Obtener mascota por ID
+router.get("/:id", auth, async (req, res) => {
   try {
-    const petId = req.params.id;
-
     const result = await pool.query(
-      `DELETE FROM public.pets
-       WHERE id = $1 AND user_id = $2
-       RETURNING *`,
-      [petId, req.user.id]
+      "SELECT * FROM pets WHERE id = $1 AND user_id = $2",
+      [req.params.id, req.user.id]
     );
 
     if (result.rows.length === 0)
-      return res.status(404).json({ error: 'Mascota no encontrada o no te pertenece' });
+      return res.status(404).json({ error: "Mascota no encontrada" });
 
-    res.json({ message: 'Mascota eliminada' });
-  } catch (err) {
-    console.error('Error al borrar mascota:', err.message);
-    res.status(500).json({ error: err.message });
+    res.json(result.rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Editar mascota
+router.patch("/:id", auth, async (req, res) => {
+  try {
+    const pet = await pool.query(
+      "SELECT * FROM pets WHERE id = $1 AND user_id = $2",
+      [req.params.id, req.user.id]
+    );
+
+    if (pet.rows.length === 0)
+      return res.status(403).json({ error: "No puedes editar esta mascota" });
+
+    const { name, type, breed, age } = req.body;
+
+    const result = await pool.query(
+      `UPDATE pets SET
+        name = COALESCE($1, name),
+        type = COALESCE($2, type),
+        breed = COALESCE($3, breed),
+        age = COALESCE($4, age)
+      WHERE id = $5
+      RETURNING *`,
+      [name, type, breed, age, req.params.id]
+    );
+
+    res.json(result.rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Eliminar mascota (SOLO dueños)
+router.delete("/:id", auth, async (req, res) => {
+  try {
+    const pet = await pool.query(
+      "SELECT * FROM pets WHERE id = $1 AND user_id = $2",
+      [req.params.id, req.user.id]
+    );
+
+    if (pet.rows.length === 0)
+      return res.status(403).json({ error: "No puedes eliminar esta mascota" });
+
+    await pool.query("DELETE FROM pets WHERE id = $1", [req.params.id]);
+
+    res.json({ message: "Mascota eliminada" });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
