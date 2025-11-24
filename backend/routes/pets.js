@@ -13,13 +13,13 @@ const auth = require("../middleware/authMiddleware");
 // Crear mascota
 router.post("/", auth, async (req, res) => {
   try {
-    const { name, type, breed, age } = req.body;
+    const { name, type, age } = req.body;
 
     const result = await pool.query(
-      `INSERT INTO pets (user_id, name, type, breed, age)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO pets (user_id, name, type, age)
+       VALUES ($1, $2, $3, $4)
        RETURNING *`,
-      [req.user.id, name, type, breed, age]
+      [req.user.id, name, type, age]
     );
 
     res.status(201).json(result.rows[0]);
@@ -31,10 +31,18 @@ router.post("/", auth, async (req, res) => {
 // Obtener mis mascotas
 router.get("/", auth, async (req, res) => {
   try {
-    const result = await pool.query(
-      "SELECT * FROM pets WHERE user_id = $1",
-      [req.user.id]
-    );
+    let result;
+    if (req.user.role === "admin") {
+      // Admin ve todas las mascotas
+      result = await pool.query("SELECT * FROM pets ORDER BY name ASC");
+    } else {
+      // Usuario normal ve solo sus mascotas
+      result = await pool.query(
+        "SELECT * FROM pets WHERE user_id = $1 ORDER BY name ASC",
+        [req.user.id]
+      );
+    }
+
     res.json(result.rows);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -49,8 +57,9 @@ router.get("/:id", auth, async (req, res) => {
       [req.params.id, req.user.id]
     );
 
-    if (result.rows.length === 0)
+    if (result.rows.length === 0) {
       return res.status(404).json({ error: "Mascota no encontrada" });
+    }
 
     res.json(result.rows[0]);
   } catch (e) {
@@ -66,20 +75,20 @@ router.patch("/:id", auth, async (req, res) => {
       [req.params.id, req.user.id]
     );
 
-    if (pet.rows.length === 0)
+    if (pet.rows.length === 0) {
       return res.status(403).json({ error: "No puedes editar esta mascota" });
+    }
 
-    const { name, type, breed, age } = req.body;
+    const { name, type, age } = req.body;
 
     const result = await pool.query(
       `UPDATE pets SET
         name = COALESCE($1, name),
         type = COALESCE($2, type),
-        breed = COALESCE($3, breed),
-        age = COALESCE($4, age)
-      WHERE id = $5
+        age = COALESCE($3, age)
+      WHERE id = $4
       RETURNING *`,
-      [name, type, breed, age, req.params.id]
+      [name, type, age, req.params.id]
     );
 
     res.json(result.rows[0]);
@@ -88,7 +97,7 @@ router.patch("/:id", auth, async (req, res) => {
   }
 });
 
-// Eliminar mascota (SOLO dueños)
+// Eliminar mascota
 router.delete("/:id", auth, async (req, res) => {
   try {
     const pet = await pool.query(
@@ -96,8 +105,9 @@ router.delete("/:id", auth, async (req, res) => {
       [req.params.id, req.user.id]
     );
 
-    if (pet.rows.length === 0)
+    if (pet.rows.length === 0) {
       return res.status(403).json({ error: "No puedes eliminar esta mascota" });
+    }
 
     await pool.query("DELETE FROM pets WHERE id = $1", [req.params.id]);
 

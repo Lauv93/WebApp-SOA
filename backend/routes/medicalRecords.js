@@ -22,28 +22,31 @@ const isAdmin = require("../middleware/isAdmin");
  */
 router.post("/", auth, isAdmin, async (req, res) => {
   try {
-    const { pet_id, description, treatment, date } = req.body;
+    const { pet_id, diagnosis, weight, treatment, date } = req.body;
 
-    const petExists = await pool.query(
-      "SELECT * FROM pets WHERE id = $1",
-      [pet_id]
-    );
-
-    if (petExists.rows.length === 0)
+    // Buscamos la mascota
+    const petRes = await pool.query("SELECT * FROM pets WHERE id = $1", [pet_id]);
+    if (petRes.rows.length === 0) {
       return res.status(404).json({ error: "Mascota no encontrada" });
+    }
 
+    const pet = petRes.rows[0];
+
+    // Insertamos el registro médico ligado al user_id de la mascota
     const result = await pool.query(
-      `INSERT INTO medical_records (pet_id, description, treatment, date)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO medical_records (pet_id, user_id, diagnosis, weight, treatment, date)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [pet_id, description, treatment, date]
+      [pet.id, pet.user_id, diagnosis, weight, treatment, date]
     );
 
     res.status(201).json(result.rows[0]);
   } catch (e) {
+    console.error(e);
     res.status(500).json({ error: e.message });
   }
 });
+
 
 
 /**
@@ -57,59 +60,31 @@ router.post("/", auth, isAdmin, async (req, res) => {
  */
 router.get("/pet/:pet_id", auth, async (req, res) => {
   try {
-    const { pet_id } = req.params;
+    let records;
 
-    const pet = await pool.query(
-      "SELECT * FROM pets WHERE id = $1",
-      [pet_id]
-    );
-
-    if (pet.rows.length === 0)
-      return res.status(404).json({ error: "Mascota no encontrada" });
-
-    if (req.user.role !== "admin" && pet.rows[0].user_id !== req.user.id)
-      return res.status(403).json({ error: "No tienes permiso para ver este historial" });
-
-    const records = await pool.query(
-      "SELECT * FROM medical_records WHERE pet_id = $1 ORDER BY date DESC",
-      [pet_id]
-    );
+    if (req.user.role === "admin") {
+      // Admin ve todos los registros
+      records = await pool.query(
+        `SELECT mr.*, p.user_id 
+         FROM medical_records mr
+         JOIN pets p ON mr.pet_id = p.id
+         ORDER BY mr.date DESC`
+      );
+    } else {
+      // Usuario normal solo ve registros de sus mascotas
+      records = await pool.query(
+        `SELECT mr.*, p.user_id 
+         FROM medical_records mr
+         JOIN pets p ON mr.pet_id = p.id
+         WHERE p.user_id = $1
+         ORDER BY mr.date DESC`,
+        [req.user.id]
+      );
+    }
 
     res.json(records.rows);
   } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-/**
- * @swagger
- * /api/medical-records/{id}:
- *   get:
- *     summary: Ver un registro médico por ID
- *     tags: [MedicalRecords]
- *     security:
- *       - bearerAuth: []
- */
-router.get("/:id", auth, async (req, res) => {
-  try {
-    const record = await pool.query(
-      `SELECT mr.*, p.user_id
-       FROM medical_records mr
-       JOIN pets p ON p.id = mr.pet_id
-       WHERE mr.id = $1`,
-      [req.params.id]
-    );
-
-    if (record.rows.length === 0)
-      return res.status(404).json({ error: "Registro no encontrado" });
-
-    const data = record.rows[0];
-
-    if (req.user.role !== "admin" && data.user_id !== req.user.id)
-      return res.status(403).json({ error: "No tienes permiso para ver este registro" });
-
-    res.json(data);
-  } catch (e) {
+    console.error(e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -126,7 +101,7 @@ router.get("/:id", auth, async (req, res) => {
  */
 router.patch("/:id", auth, isAdmin, async (req, res) => {
   try {
-    const { description, treatment, date } = req.body;
+    const { weight, diagnosis, treatment,date } = req.body;
 
     const record = await pool.query(
       "SELECT * FROM medical_records WHERE id = $1",
@@ -138,12 +113,13 @@ router.patch("/:id", auth, isAdmin, async (req, res) => {
 
     const updated = await pool.query(
       `UPDATE medical_records
-       SET description = COALESCE($1, description),
-           treatment = COALESCE($2, treatment),
-           date = COALESCE($3, date)
-       WHERE id = $4
+       SET diagnosis = COALESCE($1, diagnosis),
+           weight = COALESCE($2, weight),
+           treatments = COALESCE($3, treatment),
+           date = COALESCE($4, date)
+       WHERE id = $5
        RETURNING *`,
-      [description, treatment, date, req.params.id]
+      [diagnosis, weight, treatment, date, req.params.id]
     );
 
     res.json({ message: "Registro actualizado", record: updated.rows[0] });

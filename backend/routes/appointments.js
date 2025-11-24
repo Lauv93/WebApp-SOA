@@ -35,10 +35,10 @@ router.post("/", auth, async (req, res) => {
     }
 
     const result = await pool.query(
-      `INSERT INTO appointments (pet_id, date, reason, status)
-       VALUES ($1, $2, $3, 'scheduled')
+      `INSERT INTO appointments (pet_id ,user_id, date, reason, status)
+       VALUES ($1, $2, $3, $4, 'Pendiente')
        RETURNING *`,
-      [pet_id, date, reason]
+      [pet_id, req.user.id, date, reason]
     );
 
     res.status(201).json(result.rows[0]);
@@ -116,17 +116,18 @@ router.patch("/:id", auth, async (req, res) => {
 
     const cita = appt.rows[0];
 
-
+    // Usuario normal
     if (req.user.role !== "admin") {
       if (cita.user_id !== req.user.id)
         return res.status(403).json({ error: "No puedes modificar esta cita" });
 
       const solicitud = await pool.query(
         `UPDATE appointments
-         SET status = 'pending_change'
-         WHERE id = $1
+         SET status = 'Cambio Solicitado',
+             date = COALESCE($1, date)
+         WHERE id = $2
          RETURNING *`,
-        [req.params.id]
+        [date, req.params.id]
       );
 
       return res.json({
@@ -140,7 +141,7 @@ router.patch("/:id", auth, async (req, res) => {
       `UPDATE appointments
        SET date = COALESCE($1, date),
            reason = COALESCE($2, reason),
-           status = 'scheduled'
+           status = 'Pendiente'
        WHERE id = $3
        RETURNING *`,
       [date, reason, req.params.id]
@@ -151,6 +152,7 @@ router.patch("/:id", auth, async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
 
 router.delete("/:id", auth, isAdmin, async (req, res) => {
   try {
